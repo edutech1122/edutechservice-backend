@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: edutechservice-photo-signature-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    autoDeploy: true
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEFAULT_ADMIN_USERNAME
+        sync: false
+      - key: DEFAULT_ADMIN_PASSWORD
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "https://edutechservice.in,https://www.edutechservice.in,https://edutechservice-website.edutechservices1122.workers.dev"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+
+# NOTE: this free-tier config stores uploaded files and the jobs database on
+# local disk inside the running instance, which Render wipes on every
+# redeploy/restart (see backend/README.md's "Assumptions and placeholders").
+# That's acceptable to get the tool live and working, since customers
+# download their ZIP right after paying rather than relying on long-term
+# storage -- but job history and any not-yet-downloaded files will be lost
+# on a restart. Before relying on this for real volume, upgrade to a paid
+# Render instance type and add a persistent disk (a few extra lines here),
+# or move storage to S3-compatible object storage and the database to
+# Postgres, per the platform analysis doc.
