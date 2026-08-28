@@ -69,7 +69,22 @@ def public_config():
     return {"razorpay_key_id": RAZORPAY_KEY_ID if live else None, "payments_live": live}
 
 
-# Serve the (rewired) frontend and admin dashboard as static files.
-# Mounted last / at the root so it doesn't shadow the /api/* routes above.
+# Serve the bundled test frontend and admin dashboard as static files, IF
+# that folder was deployed alongside the backend (it's a sibling "frontend"
+# folder next to "backend" -- present when testing locally via
+# run_locally.bat, but deliberately NOT required in production: the real
+# live tool page lives on the separate static website and talks to this API
+# over CORS, it never loads pages from this server directly). Mounted last
+# at the root so it doesn't shadow the /api/* routes above, and skipped
+# entirely (rather than crashing) if the folder isn't there.
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
-app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+else:
+    logging.getLogger("main").info(
+        "No frontend directory at %s -- skipping static file mount. This is "
+        "expected/fine when only the 'backend' folder was deployed (e.g. on "
+        "Render) and the live tool page is served from a separate site.",
+        FRONTEND_DIR,
+    )
+
