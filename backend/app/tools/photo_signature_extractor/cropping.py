@@ -26,7 +26,7 @@ PHOTO_TARGET_PX = (_mm_to_px(PHOTO_TARGET_MM[0], OUTPUT_DPI), _mm_to_px(PHOTO_TA
 SIGNATURE_TARGET_PX = (_mm_to_px(SIGNATURE_TARGET_MM[0], OUTPUT_DPI), _mm_to_px(SIGNATURE_TARGET_MM[1], OUTPUT_DPI))
 
 _MIN_JPEG_QUALITY = 20
-_MAX_JPEG_QUALITY = 95
+_MAX_JPEG_QUALITY = 100
 
 
 def crop_array(full_img: np.ndarray, box) -> np.ndarray:
