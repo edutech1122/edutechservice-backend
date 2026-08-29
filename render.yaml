@@ -22,6 +22,8 @@ services:
         sync: false
       - key: RAZORPAY_KEY_SECRET
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
 
 # NOTE: this free-tier config stores uploaded files and the jobs database on
 # local disk inside the running instance, which Render wipes on every
@@ -33,3 +35,4 @@ services:
 # Render instance type and add a persistent disk (a few extra lines here),
 # or move storage to S3-compatible object storage and the database to
 # Postgres, per the platform analysis doc.
+
