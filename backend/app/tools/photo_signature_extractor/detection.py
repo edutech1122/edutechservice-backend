@@ -57,6 +57,39 @@ def get_masks(img: np.ndarray):
     return sat, val, gray
 
 
+def get_sat_val(img: np.ndarray):
+    """RGB (H,W,3) uint8 -> (saturation, value) float arrays -- same formula
+    as get_masks, but skipping the grayscale output detect_photo_grid never
+    actually used (it only reads sat/val; `gray` was computed and returned
+    in its result dict unread by any caller). Same memory-profiling
+    motivation as get_gray() above, applied to the smaller detection-pass
+    image."""
+    img = img.astype(np.float32)
+    r, g, b = img[..., 0], img[..., 1], img[..., 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    sat = (mx - mn) / np.maximum(mx, 1)
+    val = mx / 255.0
+    return sat, val
+
+
+def get_gray(img: np.ndarray) -> np.ndarray:
+    """RGB (H,W,3) uint8 -> grayscale float array only -- same formula as the
+    `gray` output of get_masks, but without computing saturation/value too.
+
+    2026-08 memory fix: pipeline.py used to call get_masks() on the full
+    (4x-quality) page image just to get its grayscale channel for signature-
+    ink detection, immediately discarding the saturation/value outputs. On a
+    ~2450x3170px page that meant holding ~5-6 extra full-resolution float32
+    arrays (sat/val plus their intermediates) purely to throw them away --
+    confirmed via direct memory profiling to be the single largest
+    contributor to the pipeline's peak memory use (a plain single-page,
+    9-student test PDF pushed the whole process well past a 512MB ceiling).
+    This function computes only what's actually used."""
+    img = img.astype(np.float32)
+    return 0.299 * img[..., 0] + 0.587 * img[..., 1] + 0.114 * img[..., 2]
+
+
 def _binary_open_3x3(mask: np.ndarray) -> np.ndarray:
     structure = np.ones((3, 3), dtype=bool)
     eroded = ndimage.binary_erosion(mask, structure=structure, border_value=0)
@@ -154,11 +187,11 @@ def detect_photo_grid(img: np.ndarray):
     row/column geometry needed by find_signature_box. A grid cell with no
     detectable content at all (truly blank) is simply absent from `grid`.
     """
-    sat, val, gray = get_masks(img)
+    sat, val = get_sat_val(img)
     h, w = sat.shape
     raw_boxes = _find_saturated_boxes(sat, SATURATION_THRESH)
     if not raw_boxes:
-        return {"grid": {}, "rowYFull": [], "colXFull": [], "medW": 0, "medH": 0, "rowSpacing": 0, "w": w, "h": h, "gray": gray}
+        return {"grid": {}, "rowYFull": [], "colXFull": [], "medW": 0, "medH": 0, "rowSpacing": 0, "w": w, "h": h}
 
     centers_x = [(b["x0"] + b["x1"]) / 2 for b in raw_boxes]
     centers_y = [(b["y0"] + b["y1"]) / 2 for b in raw_boxes]
@@ -197,7 +230,7 @@ def detect_photo_grid(img: np.ndarray):
         diffs = [rowYFull[d] - rowYFull[d - 1] for d in range(1, len(rowYFull))]
         rowSpacing = _median(diffs)
 
-    return {"grid": grid, "rowYFull": rowYFull, "colXFull": colXFull, "medW": medW, "medH": medH, "rowSpacing": rowSpacing, "w": w, "h": h, "gray": gray}
+    return {"grid": grid, "rowYFull": rowYFull, "colXFull": colXFull, "medW": medW, "medH": medH, "rowSpacing": rowSpacing, "w": w, "h": h}
 
 
 def _runs_from_indices(indices, max_gap):
@@ -213,8 +246,17 @@ def _runs_from_indices(indices, max_gap):
     return runs
 
 
-def find_signature_box(gray: np.ndarray, w: int, h: int, box, ri: int, rowYFull, rowSpacing, cap_frac: float = SIG_CAP_FRAC):
-    """Locate a student's signature in the bounded region below their photo box."""
+def find_signature_box(img: np.ndarray, w: int, h: int, box, ri: int, rowYFull, rowSpacing, cap_frac: float = SIG_CAP_FRAC):
+    """Locate a student's signature in the bounded region below their photo box.
+
+    `img` is the full-resolution RGB page image (not a precomputed grayscale
+    array). 2026-08 memory fix: this used to take a full-page grayscale array
+    computed once upfront -- at 4x output quality that's a ~30MB float array
+    (plus a much larger transient while computing it), for a page that's
+    otherwise only ever touched a small crop at a time. Converting just the
+    small search-window region to grayscale here, instead, was confirmed via
+    profiling to remove the single largest chunk of the pipeline's peak
+    memory use, with no change to the actual ink-detection math below."""
     x0, y0, x1, y1 = box
     pw, ph = x1 - x0, y1 - y0
     sx0 = max(0, round(x0 - pw * 0.15))
@@ -228,7 +270,7 @@ def find_signature_box(gray: np.ndarray, w: int, h: int, box, ri: int, rowYFull,
     if rw < 5 or rh < 5:
         return [sx0, sy0, sx1, sy1]
 
-    region_gray = gray[sy0:sy1, sx0:sx1]
+    region_gray = get_gray(img[sy0:sy1, sx0:sx1])
     dark = region_gray < DARK_THRESH
     row_sum = dark.sum(axis=1)
     row_thresh = max(2, rw * 0.008)

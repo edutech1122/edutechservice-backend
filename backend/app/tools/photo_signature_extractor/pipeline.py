@@ -12,7 +12,7 @@ import zipfile
 from dataclasses import dataclass
 
 from . import pdf_render
-from .detection import detect_photo_grid, find_signature_box, get_masks
+from .detection import detect_photo_grid, find_signature_box
 from .cropping import crop_array, encode_photo_jpeg, encode_signature_jpeg
 
 DEFAULT_QUALITY_SCALE = 4.0  # matches the "High (recommended)" default in the original tool
@@ -64,8 +64,7 @@ def process_pdf(pdf_source, quality_scale: float = DEFAULT_QUALITY_SCALE) -> Pro
         full_img = pdf_render.render_page(page, quality_scale)
         scaleX = full_img.shape[1] / detect_img.shape[1]
         scaleY = full_img.shape[0] / detect_img.shape[0]
-        _, _, full_gray = get_masks(full_img)
-        fullH, fullW = full_gray.shape
+        fullH, fullW = full_img.shape[0], full_img.shape[1]
 
         rowYFullScaled = [v * scaleY for v in detection["rowYFull"]]
         rowSpacingScaled = detection["rowSpacing"] * scaleY
@@ -79,7 +78,7 @@ def process_pdf(pdf_source, quality_scale: float = DEFAULT_QUALITY_SCALE) -> Pro
             scaled_box = [box[0] * scaleX, box[1] * scaleY, box[2] * scaleX, box[3] * scaleY]
 
             photo_arr = crop_array(full_img, scaled_box)
-            sig_box = find_signature_box(full_gray, fullW, fullH, scaled_box, r, rowYFullScaled, rowSpacingScaled)
+            sig_box = find_signature_box(full_img, fullW, fullH, scaled_box, r, rowYFullScaled, rowSpacingScaled)
             sig_arr = crop_array(full_img, sig_box)
 
             students.append(StudentResult(
