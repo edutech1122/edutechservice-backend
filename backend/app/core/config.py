@@ -52,9 +52,32 @@ PRICE_PER_STUDENT_PAISE = 100  # Re 1.00 = 100 paise
 CURRENCY = "INR"
 
 # Free trial (per user decision): each signed-in Google account gets this
-# many student units (photo+signature pairs) free, ONE TIME ONLY -- it does
-# not renew. Tracked on User.free_units_used; see billing.compute_price_and_free_units.
+# many student units (photo+signature pairs) free. Tracked on
+# User.free_units_used; see billing.refresh_trial_state for how/when it
+# resets. (Historical note: this was originally a strict one-time-ever
+# allowance with no renewal at all -- see FREE_TRIAL_RENEWAL_DAYS and
+# UNLIMITED_FREE_TRIAL_EMAILS below for the current behavior.)
 FREE_TRIAL_UNITS = 6
+
+# Per user decision: for every account except the ones listed in
+# UNLIMITED_FREE_TRIAL_EMAILS, the free-trial allowance above is no longer a
+# strict one-time-ever grant -- it renews automatically this many days after
+# the account's current tracking period started (see
+# billing.refresh_trial_state, which is the only place that actually applies
+# a renewal).
+FREE_TRIAL_RENEWAL_DAYS = 7
+
+# Per user decision: this specific account (the operator's own, for testing
+# and demos) always has the full FREE_TRIAL_UNITS available, indefinitely --
+# never exhausted, and not subject to the renewal wait either since it's
+# simply never checked against actual usage. Matched case-insensitively.
+# Add more addresses here (comma-separated in the env var) if ever needed,
+# without touching code.
+UNLIMITED_FREE_TRIAL_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get("UNLIMITED_FREE_TRIAL_EMAILS", "edutechservices1122@gmail.com").split(",")
+    if e.strip()
+}
 
 # Minimum charge (per user decision): once any part of a job is billable
 # (i.e. the free allowance is fully used), the order is charged at least
