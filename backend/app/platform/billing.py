@@ -24,8 +24,10 @@ import hmac
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import requests
+from sqlalchemy.orm import Session
 
 from app.core.config import (
     PRICE_PER_STUDENT_PAISE,
@@ -33,8 +35,11 @@ from app.core.config import (
     RAZORPAY_KEY_ID,
     RAZORPAY_KEY_SECRET,
     FREE_TRIAL_UNITS,
+    FREE_TRIAL_RENEWAL_DAYS,
+    UNLIMITED_FREE_TRIAL_EMAILS,
     MIN_ORDER_PAISE,
 )
+from app.platform.models import User
 
 logger = logging.getLogger("billing")
 
@@ -48,22 +53,27 @@ def compute_price_paise(student_count: int) -> int:
     return student_count * PRICE_PER_STUDENT_PAISE
 
 
+def compute_paid_price(declared_count: int) -> int:
+    """The ONLY place a Paid-mode job's actual bill is computed. Paid jobs
+    (mode == "paid", the dedicated "Paid" choice card) NEVER draw on the
+    account's free-trial allowance -- that allowance is reserved exclusively
+    for jobs created via the separate "Free Trial" button (mode == "trial",
+    handled entirely in jobs_service.run_job without going through this
+    function at all). Every Paid job is charged in full: Re 1/student, with
+    a MIN_ORDER_PAISE floor per order.
+
+    Always driven by the server-side declared_count -- never accept a price
+    or student count from the client."""
+    return max(MIN_ORDER_PAISE, declared_count * PRICE_PER_STUDENT_PAISE)
+
+
 def compute_price_and_free_units(free_units_used: int, declared_count: int) -> tuple[int, int, int]:
-    """The ONLY place a job's actual bill is computed, combining two user
-    decisions:
+    """Superseded by compute_paid_price for the live Paid-job flow (Paid and
+    Free Trial are now fully separate -- see that function's docstring).
+    Kept only as a reference for the old mixed free+paid pricing behavior;
+    not called anywhere in the current pipeline.
 
-    1. Free trial -- each account gets FREE_TRIAL_UNITS student units free,
-       ONE TIME ONLY (free_units_used only ever goes up, never resets). As
-       many of this job's declared_count as the account still has free
-       allowance for are applied first.
-    2. Minimum order charge -- once any part of a job is billable (i.e. the
-       free allowance ran out partway through or was already used up), the
-       order is charged at least MIN_ORDER_PAISE even if billable_count x
-       Re 1 would come to less.
-
-    Returns (price_paise, free_units_applied, billable_count). Always driven
-    by the server-side declared_count and the account's own stored usage --
-    never accept any of these numbers from the client."""
+    Returns (price_paise, free_units_applied, billable_count)."""
     free_remaining = max(0, FREE_TRIAL_UNITS - free_units_used)
     free_units_applied = min(declared_count, free_remaining)
     billable_count = declared_count - free_units_applied
@@ -73,13 +83,45 @@ def compute_price_and_free_units(free_units_used: int, declared_count: int) -> t
     return price_paise, free_units_applied, billable_count
 
 
-def trial_allowance(free_units_used: int) -> int:
-    """How many student units this account can still use via the dedicated
-    'Free trial' button (mode='trial' jobs) -- the same one-time, lifetime
-    FREE_TRIAL_UNITS allowance as above, just exposed on its own so the
-    upload flow can check/display it before a job (which needs a page count
-    from a staged upload) is even created."""
-    return max(0, FREE_TRIAL_UNITS - free_units_used)
+def refresh_trial_state(db: Session, user: User) -> int:
+    """How many student units this account can currently use via the
+    dedicated 'Free trial' button (mode='trial' jobs). This is the ONE place
+    that decides that number -- both the account-info endpoints (so the
+    frontend can display/gate on it before a job is even created) and job
+    creation itself call this, so they always agree.
+
+    Two special cases per user decision:
+
+    - An email in UNLIMITED_FREE_TRIAL_EMAILS (config.py) always gets the
+      full FREE_TRIAL_UNITS back, unconditionally, forever -- free_units_used
+      is still incremented for that account on a real trial job (so it shows
+      up normally in admin stats/auditing), it's just never checked here.
+
+    - Every other account's allowance now RENEWS: once
+      FREE_TRIAL_RENEWAL_DAYS have passed since free_trial_period_started_at,
+      this function itself resets free_units_used back to 0 and starts a new
+      period from now, then returns the fresh FREE_TRIAL_UNITS balance. This
+      is a lazy, read-time reset (there's no scheduler in this project) --
+      it fires the moment anything next checks the balance (sign-in, a
+      trial-mode job attempt), not on a fixed clock tick, but the result is
+      the same to the customer: their free trial is usable again a week
+      after their period started."""
+    if user.email and user.email.strip().lower() in UNLIMITED_FREE_TRIAL_EMAILS:
+        return FREE_TRIAL_UNITS
+
+    now = datetime.utcnow()
+    if user.free_trial_period_started_at is None:
+        # First time this account's period has been tracked (either a
+        # brand-new account, or an existing one from before renewal was
+        # added) -- start the clock now rather than assuming a past date.
+        user.free_trial_period_started_at = now
+        db.commit()
+    elif now - user.free_trial_period_started_at >= timedelta(days=FREE_TRIAL_RENEWAL_DAYS):
+        user.free_units_used = 0
+        user.free_trial_period_started_at = now
+        db.commit()
+
+    return max(0, FREE_TRIAL_UNITS - user.free_units_used)
 
 
 @dataclass

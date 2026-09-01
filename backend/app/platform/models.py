@@ -14,14 +14,19 @@ from app.core.db import Base
 class User(Base):
     """A signed-in customer account (Google sign-in only -- no passwords).
     `free_units_used` is the running total of student units (photo+signature
-    pairs) this account has ever consumed from its one-time free trial (see
-    FREE_TRIAL_UNITS in config.py) -- it only ever goes up, it does not reset."""
+    pairs) this account has consumed from its free trial (see
+    FREE_TRIAL_UNITS in config.py) during the CURRENT tracking period --
+    `free_trial_period_started_at` marks when that period began.
+    `billing.refresh_trial_state` is the only place that resets these two
+    fields (once FREE_TRIAL_RENEWAL_DAYS has elapsed) -- see that function
+    for the full renewal + UNLIMITED_FREE_TRIAL_EMAILS logic."""
     __tablename__ = "users"
 
     id = Column(String, primary_key=True)
     email = Column(String, unique=True, nullable=False, index=True)
     google_sub = Column(String, unique=True, nullable=False, index=True)
     free_units_used = Column(Integer, nullable=False, default=0)
+    free_trial_period_started_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
