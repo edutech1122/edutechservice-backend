@@ -14,7 +14,7 @@ from app.core.security import create_download_token, decode_download_token
 from app.core import storage
 from app.platform import jobs_service, uploads_service
 from app.platform.jobs_service import declared_count_range
-from app.platform.billing import get_payment_provider, trial_allowance
+from app.platform.billing import get_payment_provider, refresh_trial_state
 from app.platform.models import User
 from app.platform.user_auth import get_current_user
 
@@ -60,7 +60,7 @@ def create_job(
     num_pages = upload_meta["num_pages"]
 
     if payload.mode == "trial":
-        remaining = trial_allowance(current_user.free_units_used)
+        remaining = refresh_trial_state(db, current_user)
         if remaining <= 0:
             raise HTTPException(
                 status_code=422,
