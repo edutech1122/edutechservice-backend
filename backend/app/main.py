@@ -18,7 +18,7 @@ from app.core.config import ALLOWED_ORIGINS, SECRET_KEY, BASE_DIR, RAZORPAY_KEY_
 from app.core.db import init_db, SessionLocal
 from app.platform.admin_auth import seed_default_admin
 from app.platform.billing import payments_are_live
-from app.routers import jobs, admin, auth, uploads
+from app.routers import jobs, admin, auth, uploads, msbte
 
 logging.basicConfig(level=logging.INFO)
 
@@ -34,6 +34,7 @@ app.add_middleware(
 
 app.include_router(uploads.router)
 app.include_router(jobs.router)
+app.include_router(msbte.router)
 app.include_router(admin.router)
 app.include_router(auth.router)
 

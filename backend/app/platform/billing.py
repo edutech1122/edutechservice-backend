@@ -38,6 +38,9 @@ from app.core.config import (
     FREE_TRIAL_RENEWAL_DAYS,
     UNLIMITED_FREE_TRIAL_EMAILS,
     MIN_ORDER_PAISE,
+    MSBTE_COURSE_PRICE_PAISE,
+    MSBTE_FREE_STUDENT_LIMIT,
+    MSBTE_FREE_RENEWAL_DAYS,
 )
 from app.platform.models import User
 
@@ -122,6 +125,33 @@ def refresh_trial_state(db: Session, user: User) -> int:
         db.commit()
 
     return max(0, FREE_TRIAL_UNITS - user.free_units_used)
+
+
+def refresh_msbte_trial_state(db: Session, user: User) -> int:
+    """Same shape as refresh_trial_state, but for msbte_result_analysis's
+    own free-tier counter (msbte_free_used / msbte_free_period_started_at)
+    -- kept fully separate from the photo/signature tool's pool. Renews
+    every MSBTE_FREE_RENEWAL_DAYS (30, i.e. monthly) per user decision.
+    Returns how many free student-units remain this period."""
+    if user.email and user.email.strip().lower() in UNLIMITED_FREE_TRIAL_EMAILS:
+        return MSBTE_FREE_STUDENT_LIMIT
+
+    now = datetime.utcnow()
+    if user.msbte_free_period_started_at is None:
+        user.msbte_free_period_started_at = now
+        db.commit()
+    elif now - user.msbte_free_period_started_at >= timedelta(days=MSBTE_FREE_RENEWAL_DAYS):
+        user.msbte_free_used = 0
+        user.msbte_free_period_started_at = now
+        db.commit()
+
+    return max(0, MSBTE_FREE_STUDENT_LIMIT - user.msbte_free_used)
+
+
+def compute_msbte_price() -> int:
+    """Flat price per generated course workbook -- MSBTE_COURSE_PRICE_PAISE,
+    per user decision (not per-student)."""
+    return MSBTE_COURSE_PRICE_PAISE
 
 
 @dataclass

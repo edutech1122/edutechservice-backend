@@ -29,6 +29,14 @@ class User(Base):
     free_trial_period_started_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # msbte_result_analysis tool's own free-tier tracking (deliberately
+    # separate from free_units_used above, which is the photo/signature
+    # tool's per-student counter -- see MSBTE_FREE_STUDENT_LIMIT in
+    # config.py). "Units" here are courses generated on the Free tab, each
+    # capped at MSBTE_FREE_STUDENT_LIMIT students.
+    msbte_free_used = Column(Integer, nullable=False, default=0)
+    msbte_free_period_started_at = Column(DateTime, nullable=True)
+
 
 class Job(Base):
     __tablename__ = "jobs"
@@ -64,6 +72,16 @@ class Job(Base):
     payment_id = Column(String, nullable=True)
     paid_at = Column(DateTime, nullable=True)
 
+    # msbte_result_analysis-specific fields (nullable/unused for other
+    # tools). Kept as plain columns rather than a JSON blob so admin/SQL
+    # queries stay simple -- see the architecture doc for what each means.
+    course_code = Column(String, nullable=True)
+    course_name = Column(String, nullable=True)
+    scheme = Column(String, nullable=True)
+    pattern_label = Column(String, nullable=True)   # "ANNUAL" or "SEMESTER"
+    exam_session = Column(String, nullable=True)     # e.g. "Summer 2026"
+    options_json = Column(Text, nullable=True)       # toggles + coordinator/principal/institute fields, JSON-encoded
+
     def to_public_dict(self) -> dict:
         """What the frontend is allowed to see. Notably excludes client_ip."""
         return {
@@ -82,6 +100,11 @@ class Job(Base):
             "free_units_applied": self.free_units_applied,
             "billable_count": self.billable_count,
             "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+            "course_code": self.course_code,
+            "course_name": self.course_name,
+            "scheme": self.scheme,
+            "pattern_label": self.pattern_label,
+            "exam_session": self.exam_session,
         }
 
 

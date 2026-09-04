@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.security import create_user_token
-from app.platform.billing import refresh_trial_state
+from app.platform.billing import refresh_trial_state, refresh_msbte_trial_state
 from app.platform.models import User
 from app.platform.user_auth import get_current_user, get_or_create_user, verify_google_id_token
 
@@ -21,6 +21,9 @@ def _account_dict(db: Session, user: User) -> dict:
         # computation, so every account-info response reflects the real,
         # current server-side balance.
         "free_units_remaining": refresh_trial_state(db, user),
+        # Same idea, for the msbte_result_analysis tool's own (separate,
+        # monthly-renewing) free-tier counter -- see billing.py.
+        "msbte_free_units_remaining": refresh_msbte_trial_state(db, user),
     }
 
 

@@ -35,6 +35,17 @@ def load_zip(job_id: str) -> bytes | None:
     return path.read_bytes() if path.exists() else None
 
 
+def save_file(job_id: str, filename: str, data: bytes) -> None:
+    """Generic per-job output file, for tools whose deliverable isn't an
+    image/zip pair (e.g. msbte_result_analysis's .xlsx workbook)."""
+    (job_dir(job_id) / filename).write_bytes(data)
+
+
+def load_file(job_id: str, filename: str) -> bytes | None:
+    path = job_dir(job_id) / filename
+    return path.read_bytes() if path.exists() else None
+
+
 def delete_job_files(job_id: str) -> None:
     """Retention: call this once a job is old enough that we no longer need
     to keep the source PDF's derived images around (see analysis doc,

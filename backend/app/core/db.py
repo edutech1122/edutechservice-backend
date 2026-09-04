@@ -51,4 +51,16 @@ def init_db():
     from app.platform import models  # noqa: F401 -- register models on Base before create_all
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
-        _add_missing_columns(conn, "users", {"free_trial_period_started_at": "DATETIME"})
+        _add_missing_columns(conn, "users", {
+            "free_trial_period_started_at": "DATETIME",
+            "msbte_free_used": "INTEGER NOT NULL DEFAULT 0",
+            "msbte_free_period_started_at": "DATETIME",
+        })
+        _add_missing_columns(conn, "jobs", {
+            "course_code": "TEXT",
+            "course_name": "TEXT",
+            "scheme": "TEXT",
+            "pattern_label": "TEXT",
+            "exam_session": "TEXT",
+            "options_json": "TEXT",
+        })

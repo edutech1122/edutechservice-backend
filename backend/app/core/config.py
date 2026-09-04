@@ -85,6 +85,15 @@ UNLIMITED_FREE_TRIAL_EMAILS = {
 # job past the free trial still costs at least this, not just Rs 10.
 MIN_ORDER_PAISE = 5000  # Rs 50.00
 
+# --- msbte_result_analysis tool -------------------------------------------
+# Per user decision: flat price per course selection (not per-student, and
+# not the shared free-trial counter above -- this tool tracks its own free
+# allowance so the two tools don't draw on the same pool by accident).
+MSBTE_COURSE_PRICE_PAISE = 49900  # Rs 499.00 flat, per course generated
+MSBTE_FREE_STUDENT_LIMIT = 6      # Free tab: first N students only, per account
+MSBTE_FREE_RENEWAL_DAYS = 30      # Free tab renews monthly, per user decision
+MSBTE_MAX_PAGES = 900             # a full multi-course diploma gazette can run 600+ pages
+
 # --- payment gateway (Razorpay) ------------------------------------------
 # Both of these must be set for real payments to switch on -- see
 # get_payment_provider() in billing.py. Until both are set, MockPaymentProvider
