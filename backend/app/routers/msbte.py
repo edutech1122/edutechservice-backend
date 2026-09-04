@@ -28,6 +28,7 @@ as the photo tool, just a different price + job row).
 """
 import io
 import logging
+import threading
 from datetime import datetime
 
 import jwt
@@ -52,15 +53,71 @@ router = APIRouter(prefix="/api/msbte", tags=["msbte_result_analysis"])
 
 PDF_MAGIC = b"%PDF-"
 
+# upload_id -> {"status": "parsing"} | {"status": "ready", "session":...,
+# "institute_name":..., "institute_code":..., "courses":[...]} | {"status":
+# "error", "detail": str}
+#
+# Real gazettes run 500-600+ pages and pdfplumber.list_courses() over one of
+# those genuinely takes 40-60+ seconds of CPU time (measured directly against
+# a real 613-page gazette). That's far past what Render's free-tier proxy
+# will hold a request open for -- doing this parse inside the POST /uploads
+# request handler meant the platform's own gateway killed the connection
+# before FastAPI ever got to respond, and because that kill happens at the
+# proxy layer (not inside the app), the dropped response carries no CORS
+# headers, so the browser reports it as a bare, undiagnosable network error
+# ("Couldn't reach the processing server") instead of a real HTTP error.
+# Splitting staging (fast: just validate + count pages) from parsing (slow:
+# runs in the background, polled via GET /uploads/{id}/courses) fixes this
+# the same way the job-processing endpoints already handle slow work.
+_catalogue_cache: dict[str, dict] = {}
+_catalogue_lock = threading.Lock()
+
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _catalogue_response(catalogue: dict) -> dict:
+    courses = [
+        {
+            "code": code,
+            "course_name": c["course_name"],
+            "pattern": c["pattern"],
+            "schemes": c["schemes"],
+            "default_scheme": c["default_scheme"],
+        }
+        for code, c in sorted(catalogue["courses"].items())
+    ]
+    return {
+        "status": "ready",
+        "session": catalogue["session"],
+        "institute_name": catalogue["institute_name"],
+        "institute_code": catalogue["institute_code"],
+        "courses": courses,
+    }
+
+
+def _parse_catalogue_background(upload_id: str, raw: bytes) -> None:
+    try:
+        catalogue = pipeline.list_courses(raw)
+    except ValueError as exc:
+        result = {"status": "error", "detail": f"This gazette PDF could not be read: {exc}"}
+    except Exception:
+        logger.exception("msbte upload: background gazette parse failed")
+        result = {
+            "status": "error",
+            "detail": "This PDF could not be parsed as an MSBTE gazette. It may be corrupted, password-protected, or a different document type.",
+        }
+    else:
+        result = _catalogue_response(catalogue)
+    with _catalogue_lock:
+        _catalogue_cache[upload_id] = result
+
+
 # --- phase 1: stage the gazette --------------------------------------------
 
 @router.post("/uploads")
-async def stage_upload(request: Request, file: UploadFile = File(...)):
+async def stage_upload(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     ip = _client_ip(request)
     if not rate_limit_allow(f"msbte_stage_upload:{ip}", RATE_LIMIT_PER_MINUTE):
         raise HTTPException(status_code=429, detail="Too many uploads from this address. Please wait a minute and try again.")
@@ -80,32 +137,20 @@ async def stage_upload(request: Request, file: UploadFile = File(...)):
     if num_pages > MSBTE_MAX_PAGES:
         raise HTTPException(status_code=422, detail=f"Gazette has too many pages (max {MSBTE_MAX_PAGES}).")
 
-    try:
-        catalogue = pipeline.list_courses(raw)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"This gazette PDF could not be read: {exc}")
-    except Exception:
-        logger.exception("msbte upload: gazette parse failed")
-        raise HTTPException(status_code=400, detail="This PDF could not be parsed as an MSBTE gazette. It may be corrupted, password-protected, or a different document type.")
-
+    # Staging (byte-level validation + page count) is cheap and stays
+    # synchronous. The actual gazette parse (course/scheme detection) is the
+    # slow part -- see _catalogue_cache docstring above -- and is handed off
+    # to a background task so this response comes back immediately; the
+    # frontend polls GET /uploads/{upload_id}/courses for the result.
     upload_id = uploads_service.stage_upload(raw, num_pages)
-    courses = [
-        {
-            "code": code,
-            "course_name": c["course_name"],
-            "pattern": c["pattern"],
-            "schemes": c["schemes"],
-            "default_scheme": c["default_scheme"],
-        }
-        for code, c in sorted(catalogue["courses"].items())
-    ]
+    with _catalogue_lock:
+        _catalogue_cache[upload_id] = {"status": "parsing"}
+    background_tasks.add_task(_parse_catalogue_background, upload_id, raw)
+
     return {
         "upload_id": upload_id,
         "num_pages": num_pages,
-        "session": catalogue["session"],
-        "institute_name": catalogue["institute_name"],
-        "institute_code": catalogue["institute_code"],
-        "courses": courses,
+        "status": "parsing",
     }
 
 
@@ -121,34 +166,38 @@ def _pdf_page_count(raw: bytes) -> int:
 
 @router.get("/uploads/{upload_id}/courses")
 def get_courses(upload_id: str):
-    """Re-fetch the course catalogue for an already-staged upload (e.g. if
-    the frontend navigated away and came back) without consuming it."""
+    """Poll target for the background gazette parse kicked off by POST
+    /uploads (see _catalogue_cache above). Returns {"status": "parsing"}
+    while the parse is still running, the full catalogue once it's done, or
+    a 400 if the gazette couldn't be parsed. Also serves as a re-fetch for
+    an already-staged upload (e.g. if the frontend navigated away and came
+    back) without consuming it."""
     meta = uploads_service.get_upload(upload_id)
     if meta is None:
         raise HTTPException(status_code=410, detail="This upload has expired. Please upload the file again.")
-    raw = storage.load_upload(upload_id)
-    if raw is None:
-        raise HTTPException(status_code=410, detail="This upload has expired. Please upload the file again.")
-    try:
-        catalogue = pipeline.list_courses(raw)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    courses = [
-        {
-            "code": code,
-            "course_name": c["course_name"],
-            "pattern": c["pattern"],
-            "schemes": c["schemes"],
-            "default_scheme": c["default_scheme"],
-        }
-        for code, c in sorted(catalogue["courses"].items())
-    ]
-    return {
-        "session": catalogue["session"],
-        "institute_name": catalogue["institute_name"],
-        "institute_code": catalogue["institute_code"],
-        "courses": courses,
-    }
+
+    with _catalogue_lock:
+        cached = _catalogue_cache.get(upload_id)
+
+    if cached is None:
+        # No background parse on record for this upload_id -- most likely
+        # the app process restarted mid-parse (Render redeploy/restart wipes
+        # in-memory state). Fall back to a synchronous parse rather than
+        # leaving the frontend polling forever.
+        raw = storage.load_upload(upload_id)
+        if raw is None:
+            raise HTTPException(status_code=410, detail="This upload has expired. Please upload the file again.")
+        try:
+            catalogue = pipeline.list_courses(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return _catalogue_response(catalogue)
+
+    if cached["status"] == "parsing":
+        return {"status": "parsing"}
+    if cached["status"] == "error":
+        raise HTTPException(status_code=400, detail=cached["detail"])
+    return cached
 
 
 # --- phase 2: create the job -------------------------------------------------
