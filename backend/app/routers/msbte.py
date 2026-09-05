@@ -42,6 +42,7 @@ from app.core.db import get_db, SessionLocal
 from app.core.rate_limit import allow as rate_limit_allow
 from app.core.security import create_download_token, decode_download_token
 from app.core import storage
+from app.core.cpu_pool import run_cpu_bound
 from app.platform import uploads_service
 from app.platform.billing import get_payment_provider, refresh_msbte_trial_state
 from app.platform.models import User
@@ -99,7 +100,7 @@ def _catalogue_response(catalogue: dict) -> dict:
 
 def _parse_catalogue_background(upload_id: str, raw: bytes) -> None:
     try:
-        catalogue = pipeline.list_courses(raw)
+        catalogue = run_cpu_bound(pipeline.list_courses, raw)
     except ValueError as exc:
         result = {"status": "error", "detail": f"This gazette PDF could not be read: {exc}"}
     except Exception:
@@ -188,7 +189,7 @@ def get_courses(upload_id: str):
         if raw is None:
             raise HTTPException(status_code=410, detail="This upload has expired. Please upload the file again.")
         try:
-            catalogue = pipeline.list_courses(raw)
+            catalogue = run_cpu_bound(pipeline.list_courses, raw)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return _catalogue_response(catalogue)

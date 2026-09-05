@@ -11,6 +11,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core import storage
+from app.core.cpu_pool import run_cpu_bound
 from app.platform.models import Job, User
 from app.platform.billing import compute_msbte_price
 from . import pipeline
@@ -65,7 +66,12 @@ def run_job(db_factory, job_id: str, pdf_bytes: bytes) -> None:
             options["student_limit"] = job.trial_limit
 
         try:
-            xlsx_bytes, student_count, meta = pipeline.generate_workbook(pdf_bytes, job.course_code, options)
+            # Runs in a separate OS process (see app.core.cpu_pool) -- this
+            # is the same 40-60+ second CPU-bound parse as the catalogue
+            # step, and needs the same isolation so it doesn't starve the
+            # event loop thread answering this job's own status-polling
+            # requests while it runs.
+            xlsx_bytes, student_count, meta = run_cpu_bound(pipeline.generate_workbook, pdf_bytes, job.course_code, options)
         except pipeline.CourseNotFoundError as exc:
             job.status = "failed"
             job.error_message = str(exc)
