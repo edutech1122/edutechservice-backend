@@ -1,48 +1,43 @@
 """
-Shared process pool for genuinely CPU-bound work -- gazette PDF parsing is
-the case that matters here: a real 600+ page MSBTE gazette takes 40-60+
-seconds of near-100% CPU under pdfplumber/PyMuPDF (measured directly).
+Ran CPU-bound gazette parsing (pdfplumber/PyMuPDF over a 600+ page MSBTE
+gazette, 40-60+ seconds of near-100% CPU) in a ProcessPoolExecutor for a
+while, to stop it from starving the asyncio event loop's ability to answer
+other requests (e.g. a client's own course-catalogue polling GET) while a
+parse was in flight -- a real problem, verified directly against a local
+server.
 
-Running that as a plain function via FastAPI's BackgroundTasks still means
-it executes on a *thread* (Starlette wraps sync background callables in
-run_in_threadpool). A CPU-bound thread like that still competes with the
-main event loop thread for the same GIL and the same physical CPU, and C
-extensions like PyMuPDF don't reliably release the GIL during long internal
-calls -- so in practice the event loop thread (the one answering every other
-HTTP request, including a client's course-catalogue polling GET) got starved
-for the whole 40-60s duration of a parse. On Render's free tier, where the
-instance already only gets a sliver of shared CPU, that was enough for even
-a trivial polling request to blow past Render's own gateway timeout and get
-its connection dropped -- which, because the drop happens at the platform's
-proxy layer rather than inside the app, carries no CORS headers, so the
-browser reports it as an undiagnosable "couldn't reach the server" network
-error instead of a real HTTP error or timeout.
+That traded one failure mode for a worse one on Render's free tier: a
+ProcessPoolExecutor worker is a second, fully separate Python interpreter,
+which duplicates a meaningful chunk of memory on top of the main process
+(the raw PDF bytes, plus pdfplumber's per-page parse buffers) rather than
+sharing it the way a thread would. Render's free tier has ~512MB total, and
+production logs showed the instance getting killed and cold-restarted by
+the platform mid-parse (a clean "Started server process" / "Application
+startup complete" sequence appearing in the middle of what should have been
+an uninterrupted polling sequence) -- the signature of an out-of-memory
+kill, not a bug in the parsing logic itself.
 
-A ProcessPoolExecutor runs the work in a genuinely separate OS process, so
-the OS scheduler -- not the GIL, not however cooperative some C extension
-feels like being -- decides how CPU time is split between it and the main
-process. That's what actually keeps the app responsive to other requests
-while a parse is running, even on a single shared vCPU.
+A full restart mid-request is a worse failure than the event-loop-starvation
+problem this was meant to fix (it drops every in-flight request, not just
+the polling one, and wipes all in-memory job/upload state), so this reverts
+to running the work as a plain function -- still off the async request
+handler (still called from inside a BackgroundTasks callback, which
+Starlette runs via run_in_threadpool, i.e. a real thread, not blocking the
+event loop directly) but without a second process's memory overhead.
 
-Only pass picklable arguments and return values across it: raw bytes and
-plain dicts/lists/strings, which is everything the gazette pipeline
-functions already use.
+If a future upgrade to a Render plan with real memory headroom (well above
+512MB) makes the OOM risk moot, the process-pool version is worth
+reinstating for its event-loop-responsiveness benefit -- see git history
+for that implementation.
 """
-from concurrent.futures import ProcessPoolExecutor
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
 
-# max_workers=1: Render's free tier has one shared vCPU and ~512MB RAM.  A
-# second concurrent worker would just contend for the same CPU anyway, and
-# each one is a whole forked Python interpreter's worth of memory this
-# instance doesn't have to spare.
-_executor = ProcessPoolExecutor(max_workers=1)
-
 
 def run_cpu_bound(fn: Callable[..., T], *args) -> T:
-    """Runs fn(*args) in the shared process pool and blocks the *calling*
-    thread (not the asyncio event loop) until it's done. Call this from
-    inside a BackgroundTasks callback or other already-threaded context --
-    never directly from an async request handler."""
-    return _executor.submit(fn, *args).result()
+    """Runs fn(*args) and returns its result. Historically routed through a
+    process pool (see module docstring for why that was reverted) -- kept
+    as a named wrapper so call sites don't need to change again if a future
+    fix reintroduces process isolation once memory headroom allows it."""
+    return fn(*args)
