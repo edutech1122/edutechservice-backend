@@ -1,7 +1,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 python-multipart>=0.0.9
-pymupdf>=1.23
 numpy>=1.24
 scipy>=1.10
 pillow>=10.0
@@ -10,5 +9,16 @@ bcrypt>=4.0
 pyjwt>=2.8
 requests>=2.31
 google-auth>=2.29
-pdfplumber>=0.11
 openpyxl>=3.1
+
+# Pinned exactly (not >=): the msbte_result_analysis gazette parser is
+# coordinate/regex-based against pdfplumber's and PyMuPDF's text-extraction
+# output, which does shift between releases in ways that can silently break
+# that parsing (a newer release changed enough that a real, previously-good
+# 613-page gazette started failing with "No result-sheet pages could be
+# read from this PDF" in production while the exact same file parsed fine
+# in testing against these versions). An unpinned >= let Render's build
+# resolve a version we never actually tested. Bump these deliberately, and
+# re-verify against a real gazette, rather than letting them float.
+pymupdf==1.28.2
+pdfplumber==0.11.9
