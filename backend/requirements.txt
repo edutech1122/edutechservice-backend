@@ -22,3 +22,10 @@ openpyxl>=3.1
 # re-verify against a real gazette, rather than letting them float.
 pymupdf==1.28.2
 pdfplumber==0.11.9
+
+# OCR fallback for gazette pages whose embedded font has no ToUnicode
+# mapping (see app/tools/msbte_result/ocr_fallback.py). pytesseract is a
+# thin wrapper around the `tesseract` OCR engine -- that's a system binary,
+# not a Python package, so it must be installed separately (see
+# render.yaml / Dockerfile; plain `pip install` here is not enough).
+pytesseract==0.3.13

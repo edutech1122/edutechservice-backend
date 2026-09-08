@@ -1,11 +1,17 @@
 services:
   - type: web
     name: edutechservice-photo-signature-api
-    runtime: python
+    # Switched from runtime: python to runtime: docker so the build can
+    # install the `tesseract` OCR engine as a system package -- needed by
+    # the new MSBTE gazette OCR fallback (see backend/Dockerfile and
+    # app/tools/msbte_result/ocr_fallback.py). Everything else (env vars,
+    # plan, free-tier disk caveat below) is unchanged from the plain-python
+    # deploy this replaces.
+    runtime: docker
     plan: free
     rootDir: backend
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     autoDeploy: true
     envVars:
       - key: SECRET_KEY
@@ -16,8 +22,6 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         value: "https://edutechservice.in,https://www.edutechservice.in,https://edutechservice-website.edutechservices1122.workers.dev"
-      - key: PYTHON_VERSION
-        value: "3.11.9"
       - key: RAZORPAY_KEY_ID
         sync: false
       - key: RAZORPAY_KEY_SECRET
