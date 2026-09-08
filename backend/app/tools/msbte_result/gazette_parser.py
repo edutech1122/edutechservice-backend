@@ -50,6 +50,21 @@ def _words_look_garbled(words) -> bool:
     return pua / len(chars) > 0.3
 
 
+def _page_has_visual_content(page) -> bool:
+    """True if the page has real drawn content (vector graphics or images)
+    even though it has zero extractable text words. Needed for a second
+    real gazette template (confirmed on an actual file) whose visible
+    text isn't PDF text at all -- it's vector-drawn character outlines (a
+    "print to PDF"-style flatten of the whole page), so pdfplumber's word
+    extraction correctly returns nothing, and that's indistinguishable
+    from a genuinely blank separator page by word count alone. This is
+    the distinguishing check: a truly blank page has next to no drawing
+    commands either, while a flattened-text page has hundreds (one gazette
+    page tested had 925). Cheap to check -- pdfplumber already parsed
+    these from the page, no extra work."""
+    return bool(page.images) or len(page.rects) + len(page.lines) + len(page.curves) > 20
+
+
 def _group_lines(words, ytol=3):
     words = sorted(words, key=lambda w: (w['top'], w['x0']))
     lines = []
@@ -97,6 +112,15 @@ def _parse_words(words, page_number) -> dict | None:
     if not words:
         return None
     lines = _group_lines(words)
+    # Drop OCR noise lines that are pure punctuation (a stray '-' or '--'
+    # tesseract sometimes reads from a table border or rule). Confirmed on
+    # a real page: one such line landed *between* the subject-index row
+    # ("1 2 3 ... 10") and the subject-code row ("PHT PHP ..."), which
+    # broke the column-header block detection below (it needs those 5
+    # rows to be exactly consecutive) even though every real row was
+    # otherwise read correctly. These carry no content, so dropping them
+    # outright is safe -- a real data line always has digits or letters.
+    lines = [l for l in lines if re.search(r'[A-Za-z0-9]', l['text'])]
     txt = [l['text'] for l in lines]
     full = '\n'.join(txt)
 
@@ -284,14 +308,43 @@ def parse_gazette(pdf_bytes: bytes, max_pages: int | None = None) -> list[dict]:
         for page_index, page in enumerate(pdf.pages):
             try:
                 words = page.extract_words(x_tolerance=1.5, y_tolerance=2)
-                if words and _words_look_garbled(words):
+                garbled = words and _words_look_garbled(words)
+                # A genuinely blank/separator page also has zero words --
+                # only treat "zero words" as a reason to OCR when the page
+                # actually has real drawn content (see
+                # _page_has_visual_content), otherwise every blank page in
+                # a large gazette would trigger an expensive, pointless
+                # OCR pass.
+                empty_but_drawn = not words and _page_has_visual_content(page)
+                if garbled or empty_but_drawn:
                     logger.info(
-                        "Gazette page %s: embedded font has no usable Unicode mapping -- "
-                        "falling back to OCR.", page.page_number,
+                        "Gazette page %s: %s -- falling back to OCR.",
+                        page.page_number,
+                        "embedded font has no usable Unicode mapping" if garbled
+                        else "text is vector-drawn outlines with no extractable words",
                     )
                     words = ocr_fallback.extract_words_via_ocr(raw, page_index)
                     ocr_pages_used += 1
+                    # Diagnostic only: shows exactly what OCR actually
+                    # extracted, regardless of whether the parse below
+                    # succeeds. Added after a production run OCR'd every
+                    # page without raising any exception, yet still ended
+                    # up with zero parseable pages -- with no error thrown
+                    # anywhere, there was no way to tell from the logs
+                    # whether OCR returned garbage, near-empty output, or
+                    # correct text that some other check was rejecting.
+                    preview = ' '.join(w['text'] for w in words[:20])
+                    logger.info(
+                        "Gazette page %s: OCR extracted %d word(s). Preview: %r",
+                        page.page_number, len(words), preview,
+                    )
                 parsed = _parse_words(words, page.page_number)
+                if parsed is None and words:
+                    logger.info(
+                        "Gazette page %s: extracted %d word(s) but none of the "
+                        "expected header/table patterns matched -- treating as "
+                        "not a result-sheet page.", page.page_number, len(words),
+                    )
             except Exception:
                 logger.exception("Failed to parse gazette page %s -- skipping.", page.page_number)
                 parsed = None

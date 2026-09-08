@@ -59,28 +59,65 @@ OCR_ZOOM = 6
 TESSERACT_CONFIG = "--psm 6 --oem 3"
 
 
-def _detect_text_angle(page) -> int:
+def _detect_text_angle(page) -> int | None:
     """Returns the content-stream text direction as a rotation angle (0 or
     90), independent of page.rotation. Some gazette templates draw their
     text sideways at the content-stream level (each line's direction vector
     is (0, -1) instead of the normal (1, 0)) without setting the page's own
     /Rotate flag, so page.rotation alone can't detect this -- confirmed on
-    a real "D. Pharma" gazette page. Falls back to 0 (no rotation) if the
-    page has no text to inspect (e.g. it's the page we're about to OCR
-    precisely because normal extraction returned unusable PUA codepoints,
-    which still carry direction info) or the direction is the standard one."""
+    a real "D. Pharma" gazette page.
+
+    Returns None -- "unknown", not "no rotation" -- when the page has no
+    text at all to inspect. That happens on a different real gazette
+    template (confirmed on a second file) whose visible text isn't real
+    PDF text at all: it's vector-drawn character outlines (a "print to
+    PDF"-style flatten), which carries no direction metadata whatsoever
+    for get_text('dict') to read (it comes back with zero text blocks).
+    Silently defaulting that case to 0 would render un-rotated and produce
+    unreadable OCR input with no error anywhere -- exactly what happened
+    in production before this was caught. Callers should fall back to
+    _probe_best_angle for a None result."""
     try:
         d = page.get_text("dict")
     except Exception:
-        return 0
+        return None
+    found_any_text = False
     for block in d.get("blocks", []):
         for line in block.get("lines", []):
             direction = line.get("dir")
-            if direction and abs(direction[1]) > abs(direction[0]):
+            if not direction:
+                continue
+            found_any_text = True
+            if abs(direction[1]) > abs(direction[0]):
                 return 90
-            if direction:
-                return 0
-    return 0
+            return 0
+    return 0 if found_any_text else None
+
+
+# Quick, cheap render used only to score candidate rotation angles -- much
+# lower zoom than the real OCR pass, since this just needs to tell "mostly
+# readable Latin text" apart from "noise", not extract accurate words.
+_PROBE_ZOOM = 2
+
+
+def _probe_best_angle(page) -> int:
+    """Tries rendering the page at each of the 4 right-angle rotations and
+    OCRs each cheaply, picking whichever produces the most letter/digit
+    characters -- a proxy for "this orientation is actually readable".
+    Used only when _detect_text_angle can't tell from text metadata at all
+    (see its docstring) -- a real gazette page confirmed to hit this path
+    is landscape content vector-drawn into a portrait canvas with zero PDF
+    text objects, so there's no metadata-based shortcut available."""
+    best_angle, best_score = 0, -1
+    for angle in (0, 90, 180, 270):
+        mat = fitz.Matrix(_PROBE_ZOOM, _PROBE_ZOOM).prerotate(angle)
+        pix = page.get_pixmap(matrix=mat)
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        text = pytesseract.image_to_string(img, config="--psm 6 --oem 3")
+        score = sum(1 for ch in text if ch.isalnum())
+        if score > best_score:
+            best_angle, best_score = angle, score
+    return best_angle
 
 
 def extract_words_via_ocr(pdf_bytes: bytes, page_index: int) -> list[dict]:
@@ -114,6 +151,12 @@ def extract_words_via_ocr(pdf_bytes: bytes, page_index: int) -> list[dict]:
     try:
         page = doc[page_index]
         angle = _detect_text_angle(page)
+        if angle is None:
+            angle = _probe_best_angle(page)
+            logger.info(
+                "Page has no text metadata to detect rotation from -- "
+                "probed candidate angles and picked %d degrees.", angle,
+            )
         mat = fitz.Matrix(OCR_ZOOM, OCR_ZOOM).prerotate(angle)
         pix = page.get_pixmap(matrix=mat)
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
